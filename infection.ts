@@ -75,6 +75,7 @@ class Player {
     icon: number;
     health: HealthState;
     vaccinated: boolean;
+    infected_by: number;
     show() {
         basic.showString(playerIcons[this.icon]);
     }
@@ -87,7 +88,7 @@ let state = GameState.Stopped;
 let master = false;
 let patientZero: Player;
 const players: Player[] = [];
-let vaccinatedPercentage = 0;
+let vaccinatedPercentage = 30;
 
 // player state
 let paired = false;
@@ -108,8 +109,9 @@ function player(id: number): Player {
     p.icon = (players.length + 1) % playerIcons.length;
     p.health = HealthState.Healthy;
     p.vaccinated = false;
+    p.infected_by = -1;
     players.push(p);
-    serial.writeLine(`player ==> ${p.id}`)
+    serial.writeLine(`#player ==> ${p.id}`)
 
     return p;
 }
@@ -226,9 +228,9 @@ input.onButtonPressed(Button.AB, () => {
     // register as master
     if (state == GameState.Stopped && !master) {
         master = true;
-        serial.writeLine("registered as master");
+        serial.writeLine("#registered as master");
         state = GameState.ChoosingVaccinatedPercentage;
-        basic.showString("0");
+        basic.showNumber(vaccinatedPercentage);
         return;
     }
 
@@ -238,7 +240,7 @@ input.onButtonPressed(Button.AB, () => {
     if (state == GameState.ChoosingVaccinatedPercentage && master) {
         paired = true;
         state = GameState.Pairing;
-        serial.writeLine(`vaccinated percentage choosed: ${vaccinatedPercentage}`);
+        serial.writeLine(`#vaccinated percentage choosed: ${vaccinatedPercentage}`);
         radio.setTransmitPower(7); // beef up master signal
         basic.showString("0");
         return;
@@ -255,20 +257,36 @@ input.onButtonPressed(Button.AB, () => {
                 radio.sendValue("vaccine", vaccinated_player.id);
                 basic.pause(100);
             }
-            serial.writeLine(`vaccinated: ${playerIcons[vaccinated_player.icon]}`);
         }
 
+        serial.writeLine("== nodes information ==");
+
         // pick 1 player and infect him
-        patientZero = players[Math.random(players.length)];
+        let patient_zero_index = Math.random(players.length);
+        patientZero = players[patient_zero_index];
         while (patientZero.health == HealthState.Healthy) {
             radio.sendValue("infect", patientZero.id);
             basic.pause(100);
         }
-        serial.writeLine(`patient zero: ${playerIcons[patientZero.icon]}`);
+        serial.writeLine(`${playerIcons[players[patient_zero_index].icon]}\tPATIENTZERO`);
+
+        for (let i = 0; i < number_of_vaccinated_players; ++i) {
+            if (i != patient_zero_index) {
+                serial.writeLine(`${playerIcons[players[i].icon]}\tVACCINED`);
+            }
+        }
+
+        for (let i = number_of_vaccinated_players; i < players.length; ++i) {
+            if (i != patient_zero_index) {
+                serial.writeLine(`${playerIcons[players[i].icon]}\tNORMAL`);
+            }
+        }
+
+        serial.writeLine("== arcs information ==");
 
         // all ready
         state = GameState.Running;
-        serial.writeLine(`game started ${players.length} players`);
+        serial.writeLine(`#game started ${players.length} players`);
 
         // show startup
         basic.showIcon(GameIcons.Dead);
@@ -295,14 +313,26 @@ radio.onDataPacketReceived(({ time, receivedNumber, receivedString, signal, seri
         else if (receivedString == "health") {
             let p = player(id);
             p.health = receivedNumber;
-            // check if all infected
+            // check if all infected died
             if (allDead())
                 gameOver();
         }
-        // TODO: ricevere chi è stato infettato da chi
         else if (receivedString == "vaccinated") {
             let p = player(id);
             p.vaccinated = true;
+        }
+        else if (receivedString == "infected-by") {
+            let p = player(id);
+            if (p.infected_by < 0) {
+                p.infected_by = receivedNumber;
+                let targetIcon = p.icon;
+                serial.writeLine(`${playerIcons[receivedNumber]}\tINFECTED\t${playerIcons[targetIcon]}`);
+            }
+        }
+        else if (receivedString == "tried") {
+            let p = player(id);
+            let targetIcon = p.icon;
+            serial.writeLine(`${playerIcons[receivedNumber]}\tTRIED\t${playerIcons[targetIcon]}`);
         }
     }
     // player 
@@ -355,6 +385,9 @@ radio.onDataPacketReceived(({ time, receivedNumber, receivedString, signal, seri
                             infectedTime = input.runningTime();
                             health = HealthState.Incubating;
                         }
+                        else if (vaccinated) {
+                            radio.sendValue("tried", receivedNumber);
+                        }
                     }
                 } else if (health != HealthState.Dead
                     && receivedString == "health" && signal > RSSI) {
@@ -375,14 +408,13 @@ basic.forever(() => {
                     radio.sendValue("paired", p.id);
                     radio.sendValue("i" + p.id, p.icon);
                 }
-                serial.writeLine(`pairing ${players.length} players`);
+                serial.writeLine(`#pairing ${players.length} players`);
                 basic.pause(500);
                 break;
             case GameState.Running:
                 for (const p of players) {
                     radio.sendValue("h" + p.id, p.health);
                 }
-                // TODO: scrivere su seriale lo stato delle infezioni
                 break;
             case GameState.Over:
                 if (patientZero)
@@ -398,8 +430,7 @@ basic.forever(() => {
                     radio.sendValue("pair", control.deviceSerialNumber());
                 else if (infectedBy > -1)
                     radio.sendValue("health", health);
-                if (vaccinated)
-                {
+                if (vaccinated) {
                     radio.sendValue("vaccinated", 1);
                 }
                 break;
@@ -413,7 +444,9 @@ basic.forever(() => {
                 if (health == HealthState.Incubating || health == HealthState.Sick)
                     radio.sendValue("transmit", playerIcon);
                 radio.sendValue("health", health);
-                // TODO: spedire anche chi mi ha infettato
+                if (infectedBy > 0) {
+                    radio.sendValue("infected-by", infectedBy);
+                }
                 break;
         }
         // show current animation
@@ -421,5 +454,5 @@ basic.forever(() => {
     }
 })
 
-
+serial.writeLine("== restarted ==");
 basic.showIcon(GameIcons.Pairing)
