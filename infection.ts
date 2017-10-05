@@ -41,7 +41,7 @@ const INCUBATION = 20000; // time before showing symptoms
 const DEATH = 40000; // time before dying off the disease
 const RSSI = -50; // db
 const TRANSMISSIONPROB = 40; // % probability to transfer disease
-const VACCINATEDPROB = 0; // % probability to get ill if player is vaccinated
+const VACCINATEDPROB = -1; // % probability to get ill if player is vaccinated
 
 const VACCINATED_PERCENTAGE_STEP = 10; // percentage of vaccinated players is a multiple of this quantity
 
@@ -88,7 +88,7 @@ let state = GameState.Stopped;
 let master = false;
 let patientZero: Player;
 const players: Player[] = [];
-let vaccinatedPercentage = 30;
+let vaccinatedPercentage = 0;
 
 // player state
 let paired = false;
@@ -126,6 +126,7 @@ function gameOver() {
     state = GameState.Over;
     if (patientZero)
         patientZero.show();
+    serial.writeLine("== game over ==");
 }
 
 function gameFace() {
@@ -171,18 +172,6 @@ function gameFace() {
                     basic.showIcon(GameIcons.Healthy, 2000);
                     break;
             }
-            // show how infected
-            if (infectedBy > -1) {
-                basic.showString(" INFECTED BY");
-                basic.showString(playerIcons[infectedBy]);
-                basic.pause(2000);
-            } else if (infectedBy == 0) {
-                basic.showString(" PATIENT ZERO");
-                basic.pause(2000);
-            }
-            // show score
-            game.showScore();
-            basic.pause(1000);
             break;
     }
 }
@@ -250,7 +239,7 @@ input.onButtonPressed(Button.AB, () => {
     if (state == GameState.Pairing) {
         // pick the selected percentage of vaccinated players and vaccinate them
         let number_of_vaccinated_players = players.length * vaccinatedPercentage / 100;
-        serial.writeLine(`number of vaccinated players: ${number_of_vaccinated_players} `);
+        serial.writeLine(`#number of vaccinated players: ${number_of_vaccinated_players} `);
         for (let i = 0; i < number_of_vaccinated_players; ++i) {
             let vaccinated_player = players[i];
             while (!vaccinated_player.vaccinated) {
@@ -314,8 +303,9 @@ radio.onDataPacketReceived(({ time, receivedNumber, receivedString, signal, seri
             let p = player(id);
             p.health = receivedNumber;
             // check if all infected died
-            if (allDead())
+            if (state == GameState.Running && allDead()) {
                 gameOver();
+            }
         }
         else if (receivedString == "vaccinated") {
             let p = player(id);
